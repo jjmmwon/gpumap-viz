@@ -1,0 +1,32 @@
+# Python / Backend
+backend/.venv/
+backend/__pycache__/
+backend/*.pyc
+backend/*.pyo
+backend/*.egg-info/
+backend/dist/
+backend/build/
+backend/tmp/
+*.pyc
+*.pyo
+__pycache__/
+.env
+.env.*
+
+# Uploaded data files
+backend/uploads/
+*.npy
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.local
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/settings.json
+*.swp
+*.swo
