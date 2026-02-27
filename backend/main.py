@@ -9,8 +9,18 @@ FastAPI + WebSocket 서버
   WS   /ws          — 실시간 임베딩 스트림 (binary)
 
 Binary WebSocket 프레임 포맷 (임베딩):
-  [uint32 n_inserted][uint32 n_points][uint8 is_done]
-  [float32 * n_points * 2]  ← flat [x0,y0,x1,y1,...]
+  Header 76 bytes (little-endian):
+    [0..3]   uint32 n_inserted
+    [4..7]   uint32 n_points
+    [8..11]  uint32 is_done
+    [12..15] uint32 n_update_ops
+    [16..19] uint32 n_embedding_ops
+    [20..23] float32 insertion_time
+    [24..27] float32 update_time
+    [28..31] float32 embedding_time
+    [32..35] float32 wall_time
+    [36..75] uint32 embedding_queue_levels[10]
+  [76..] float32 * n_points * 2  ← flat [x0,y0,x1,y1,...]
 """
 from __future__ import annotations
 
@@ -67,18 +77,21 @@ app.add_middleware(
 async def api_start(config: dict):
     global _current_queue, _current_config
 
-    # If a run is already in progress, stop it first
+    # If a run is already in progress, stop it first (run in thread to avoid blocking event loop)
     if runner.is_alive():
-        runner.stop()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, runner.stop)
 
     _current_config = config
-    _current_queue = asyncio.Queue(maxsize=4)
+    # maxsize=0 → unbounded: put_nowait never raises QueueFull
+    # Runner produces 1 frame per target_latency seconds, WS drains immediately
+    _current_queue = asyncio.Queue(maxsize=0)
 
     # Inject uploaded file path if needed
     if config.get("data_source") == "npy" and _uploaded_npy_path:
         config["data_path"] = _uploaded_npy_path
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     runner.start(config, loop, _current_queue)
 
     return {"status": "started", "config": config}
@@ -159,8 +172,38 @@ async def websocket_endpoint(websocket: WebSocket):
                 is_done: bool = msg["is_done"]
                 n_points = emb.shape[0]
 
-                # Binary frame: header + flat float32 array
-                header = struct.pack("<IIB", n_inserted, n_points, int(is_done))
+                # Binary frame: header(76B) + flat float32 array
+                # Header layout (little-endian):
+                #   [0..3]   uint32 n_inserted        (insertion ops this iter)
+                #   [4..7]   uint32 n_points           (total points in embedding)
+                #   [8..11]  uint32 is_done
+                #   [12..15] uint32 n_update_ops
+                #   [16..19] uint32 n_embedding_ops
+                #   [20..23] float32 insertion_time (s)
+                #   [24..27] float32 update_time    (s)
+                #   [28..31] float32 embedding_time (s)
+                #   [32..35] float32 wall_time       (s)
+                #   [36..75] uint32 embedding_queue_levels[10]
+                #   [76..]   float32 * n_points * 2
+                queue_levels = msg.get("embedding_queue_levels", [])
+                if not isinstance(queue_levels, list):
+                    queue_levels = []
+                queue_levels = [int(v) for v in queue_levels[:10]]
+                if len(queue_levels) < 10:
+                    queue_levels.extend([0] * (10 - len(queue_levels)))
+                header = struct.pack(
+                    "<IIIIIffff10I",
+                    n_inserted,
+                    n_points,
+                    int(is_done),
+                    int(msg.get("n_update_ops", 0)),
+                    int(msg.get("n_embedding_ops", 0)),
+                    float(msg.get("insertion_time", 0.0)),
+                    float(msg.get("update_time", 0.0)),
+                    float(msg.get("embedding_time", 0.0)),
+                    float(msg.get("wall_time", 0.0)),
+                    *queue_levels,
+                )
                 flat = emb.astype(np.float32, copy=False).flatten()
                 await websocket.send_bytes(header + flat.tobytes())
 

@@ -44,10 +44,10 @@ export function StatusBar({ status }: Props) {
       `}</style>
       <div style={{
         padding: "12px 16px",
-        borderTop: "1px solid var(--border)",
         background: "var(--surface-alt)",
         display: "flex",
         flexDirection: "column",
+        height: "100%",
         gap: 9,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -55,7 +55,7 @@ export function StatusBar({ status }: Props) {
           <span style={{
             textTransform: "capitalize",
             fontWeight: 600,
-            fontSize: 12,
+            fontSize: 14,
             padding: "2px 8px",
             border: "1px solid var(--border)",
             borderRadius: 999,
@@ -64,14 +64,14 @@ export function StatusBar({ status }: Props) {
             {phase}
           </span>
           {message && (
-            <span style={{ color: "var(--danger)", fontSize: 12, marginLeft: 2 }}>
+            <span style={{ color: "var(--danger)", fontSize: 14, marginLeft: 2 }}>
               {message}
             </span>
           )}
         </div>
 
         {embedding && (
-          <div style={{ display: "flex", gap: 14, fontSize: 12, color: "var(--muted)", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 14, fontSize: 14, color: "var(--muted)", flexWrap: "wrap" }}>
             <span>Points: <b style={{ color: "var(--text)" }}>{embedding.nPoints.toLocaleString()}</b></span>
             {nInstances && (
               <span>Total: <b style={{ color: "var(--text)" }}>{nInstances.toLocaleString()}</b></span>
