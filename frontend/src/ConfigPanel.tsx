@@ -13,7 +13,7 @@ const DEFAULT: GpumapConfig = {
   n_neighbors: 15,
   min_dist: 0.1,
   max_epoch: 200,
-  target_latency: 10.0,
+  target_latency: 3.0,
   verbose: false,
 };
 

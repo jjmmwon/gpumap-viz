@@ -26,6 +26,7 @@ export interface EmbeddingState {
   nInserted: number;
   nPoints: number;
   isDone: boolean;
+  key: string;
 }
 
 export interface IterationStat {
@@ -146,9 +147,13 @@ export function useGpumap() {
 
     // 2. Open WebSocket
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${window.location.host}/ws`);
+    const port = 8000;
+    const ws = new WebSocket(`${proto}://${window.location.hostname}:${port}/ws`);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
+
+    let last = performance.now();
+
 
     ws.onopen = () => {
       setStatus((prev) => ({ ...prev, phase: "running" }));
@@ -156,6 +161,16 @@ export function useGpumap() {
 
     ws.onmessage = (ev) => {
       if (ev.data instanceof ArrayBuffer) {
+                const t0 = performance.now();
+        const dtGap = t0 - last;
+        last = t0;
+
+        // 최소 작업만
+        const bytes = ev.data.byteLength;
+
+        const t1 = performance.now();
+        console.log(`gap=${dtGap.toFixed(1)}ms handler=${(t1-t0).toFixed(1)}ms bytes=${bytes}`);
+
         // Binary frame → embedding + iteration stats
         const buf = ev.data as ArrayBuffer;
         if (buf.byteLength < BINARY_HEADER_BYTES) return;
@@ -193,9 +208,11 @@ export function useGpumap() {
         setStatus((prev) => ({
           ...prev,
           phase: isDone ? "done" : "running",
-          embedding: { x, y, nInserted, nPoints, isDone },
-          history: historyRef.current,
+          embedding: { x, y, nInserted, nPoints, isDone, key: `${nInserted}-${wallTime}` },
+          history: historyRef.current          
         }));
+
+        console.log("Received iteration stat:", stat);
       } else {
         // Text frame → JSON control message
         try {
@@ -205,7 +222,7 @@ export function useGpumap() {
               ? encodeClassLabels(msg["class_labels"] as unknown[])
               : null;
             setStatus((prev) => ({
-              ...prev,
+              ...prev,              
               phase: "running",
               nInstances: msg["n_instances"] as number,
               nFeatures: msg["n_features"] as number,

@@ -101,53 +101,69 @@ export function ScatterPlot({ embedding, classCategories, classNames }: Props) {
       }));
   }, [classNames, categoryColors, visibleCategories]);
 
-  if (!embedding || embedding.nPoints === 0) {
-    return (
-      <div style={{
-        width: "100%",
-        height: "100%",
-        border: "1px dashed #cfdae8",
-        borderRadius: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        color: "var(--muted)",
-        fontSize: 16,
-        flexDirection: "column",
-        gap: 10,
-        background: "var(--surface-alt)",
-      }}>
-        <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4">
-          <circle cx="12" cy="12" r="10" />
-          <circle cx="8" cy="10" r="1.5" fill="currentColor" />
-          <circle cx="14" cy="8" r="1.5" fill="currentColor" />
-          <circle cx="10" cy="15" r="1.5" fill="currentColor" />
-          <circle cx="16" cy="14" r="1.5" fill="currentColor" />
-        </svg>
-        <span>Press START to stream points</span>
-      </div>
-    );
-  }
+  const embeddingData =
+    embedding && embedding.nPoints > 0
+      ? (visibleCategories
+        ? { x: embedding.x, y: embedding.y, category: visibleCategories }
+        : { x: embedding.x, y: embedding.y })
+      : null;
 
-  const embeddingData = visibleCategories
-    ? { x: embedding.x, y: embedding.y, category: visibleCategories }
-    : { x: embedding.x, y: embedding.y };
+  const showPlaceholder = !embedding || embedding.nPoints === 0;
 
   return (
     <div
       ref={containerRef}
-      style={{ width: "100%", height: "100%", position: "relative", overflow: "hidden", background: "var(--surface)" }}
+      style={{
+        width: "100%",
+        height: "100%",
+        position: "relative",
+        overflow: "hidden",
+        background: "var(--surface)",
+      }}
     >
-      {viewSize.width > 0 && viewSize.height > 0 && (
-        <EmbeddingView
-          data={embeddingData}
-          categoryColors={categoryColors}
-          width={viewSize.width}
-          height={viewSize.height}
-          tooltip={tooltip}
-          onTooltip={setTooltip}
-        />
+      {showPlaceholder ? (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            border: "1px dashed #cfdae8",
+            borderRadius: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "var(--muted)",
+            fontSize: 16,
+            flexDirection: "column",
+            gap: 10,
+            background: "var(--surface-alt)",
+          }}
+        >
+          <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4">
+            <circle cx="12" cy="12" r="10" />
+            <circle cx="8" cy="10" r="1.5" fill="currentColor" />
+            <circle cx="14" cy="8" r="1.5" fill="currentColor" />
+            <circle cx="10" cy="15" r="1.5" fill="currentColor" />
+            <circle cx="16" cy="14" r="1.5" fill="currentColor" />
+          </svg>
+          <span>Press START to stream points</span>
+        </div>
+      ) : (
+        viewSize.width > 0 &&
+        viewSize.height > 0 &&
+        embeddingData && (
+          <EmbeddingView
+            data={embeddingData}
+            categoryColors={categoryColors}
+            width={viewSize.width}
+            height={viewSize.height}
+            tooltip={tooltip}
+            key={embedding.key}
+
+            onTooltip={setTooltip}
+          />
+        )
       )}
+
       {legendItems.length > 0 && (
         <div
           style={{
