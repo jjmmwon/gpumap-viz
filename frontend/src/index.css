@@ -234,7 +234,7 @@ input[type="file"] { display: none; }
 .panel-title {
   margin: 0;
   font-size: 20px;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1.2;
   letter-spacing: 0.1px;
 }
@@ -299,13 +299,13 @@ input[type="file"] { display: none; }
 .performance-section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   padding-left: 8px;
   padding-right: 8px;
 }
 
 .performance-stack .performance-section h3 {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
 }
 
@@ -352,7 +352,7 @@ input[type="file"] { display: none; }
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: 14px;
   color: var(--muted);
   white-space: nowrap;
 }
@@ -485,6 +485,7 @@ input[type="file"] { display: none; }
 .performance-queue-bar {
   fill: #2f7bf8;
 }
+
 
 .progress-bar-track {
   height: 8px;

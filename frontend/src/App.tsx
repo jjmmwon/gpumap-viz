@@ -7,7 +7,6 @@ import { useGpumap } from "./useGpumap";
 export default function App() {
   const { status, start, stop, uploadNpy } = useGpumap();
   const running = status.phase === "running" || status.phase === "connecting";
-  const nPoints = status.embedding?.nPoints ?? 0;
   const totalPoints = status.nInstances ?? 0;
 
   return (
@@ -55,8 +54,6 @@ export default function App() {
               <PerformanceCharts
                 history={status.history}
                 targetLatency={status.targetLatency}
-                phase={status.phase}
-                nPoints={nPoints}
                 totalPoints={totalPoints}
               />
             </aside>

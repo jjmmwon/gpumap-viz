@@ -18,8 +18,7 @@ import numpy as np
 from gpumap import GPUMAP
 from gpumap._core import GPUMAPParams
 from gpumap.data_loader import DataLoader, PreloadMNISTDataLoader
-from gpumap.scheduler import DefaultScheduler
-from gpumap.estimator import DefaultLinearEstimator
+from gpumap.policy import DefaultWeightedPolicy
 
 
 _MAX_NEIGHBORS = 32
@@ -276,7 +275,7 @@ class GPUMAPRunner:
         self._thread = None
         self._thread_stop = None
 
-    def _put(self, msg: dict) -> None:        
+    def _put(self, msg: dict) -> None:
         if self._loop and self._queue:
             self._loop.call_soon_threadsafe(self._queue.put_nowait, msg)
 
@@ -306,10 +305,7 @@ class GPUMAPRunner:
                     model = GPUMAP(
                         data_loader=data_loader,
                         params=params,
-                        scheduler=DefaultScheduler(),
-                        insertion_estimator=DefaultLinearEstimator(),
-                        update_estimator=DefaultLinearEstimator(),
-                        embedding_estimator=DefaultLinearEstimator(),
+                        policy=DefaultWeightedPolicy(),
                     )
                     with self._model_lock:
                         self._model = model
@@ -358,8 +354,19 @@ class GPUMAPRunner:
 
                 wall_time = time.perf_counter() - t0
 
-                print(f"[gpumap-debug] run loop iteration {iter} : wall_time={wall_time:.2f}s")
+                print(
+                    f"[gpumap-debug] run loop iteration {iter} : wall_time={wall_time:.2f}s"
+                )
 
+                if res.insertion_completed and not all_inserted:
+                    all_inserted = True
+
+                embedding_queue_levels = list(
+                    getattr(res, "embedding_queue_level_sizes", [])
+                )
+                embedding_queue_empty = sum(embedding_queue_levels) == 0
+
+                is_done = all_inserted and embedding_queue_empty
                 self._put(
                     {
                         "type": "embedding",
@@ -367,19 +374,19 @@ class GPUMAPRunner:
                         "n_inserted": res.n_insertion_ops,
                         "n_update_ops": res.n_update_ops,
                         "n_embedding_ops": res.n_embedding_ops,
-                        "is_done": res.insertion_completed,
+                        "is_done": is_done,
                         "insertion_time": res.insertion_time,
                         "update_time": res.update_time,
                         "embedding_time": res.embedding_time,
                         "wall_time": wall_time,
-                        "embedding_queue_levels": list(
-                            getattr(res, "embedding_queue_level_sizes", [])
-                        ),
+                        "insertion_queue_size": getattr(res, "insertion_queue_size", 0),
+                        "update_queue_size": getattr(res, "update_queue_size", 0),
+                        "embedding_queue_levels": embedding_queue_levels,
                     }
-                )                
+                )
 
-                if res.insertion_completed and not all_inserted:
-                    all_inserted = True
+                if is_done:
+                    break
 
         except Exception as exc:
             message = str(exc).strip() or exc.__class__.__name__

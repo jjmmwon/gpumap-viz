@@ -1,24 +1,32 @@
 /**
  * useGpumap — WebSocket 연결 및 binary 임베딩 스트리밍 훅
  *
- * Binary 프레임 포맷 (backend/main.py 참고):
- *   Header 76 bytes (little-endian):
- *     [0..3]   uint32 n_inserted
- *     [4..7]   uint32 n_points
- *     [8..11]  uint32 is_done
- *     [12..15] uint32 n_update_ops
- *     [16..19] uint32 n_embedding_ops
- *     [20..23] float32 insertion_time (s)
- *     [24..27] float32 update_time    (s)
- *     [28..31] float32 embedding_time (s)
- *     [32..35] float32 wall_time      (s)
- *     [36..75] uint32 embedding_queue_levels[10]
- *   [76..]   float32 * n_points * 2  (x0,y0, x1,y1, ...)
+ * Binary frame: header(88B) + flat float32 array
+ * Header layout (little-endian):
+ * [0..7]   uint64 n_inserted        (insertion ops this iter)
+ * [8..11]  uint32 n_points           (total points in embedding)
+ * [12..15] uint32 is_done
+ * [16..23] uint64 n_update_ops
+ * [24..31] uint64 n_embedding_ops
+ * [32..35] float32 insertion_time (s)
+ * [36..39] float32 update_time    (s)
+ * [40..43] float32 embedding_time (s)
+ * [44..47] float32 wall_time       (s)
+ * [48..55] uint64 insertion_queue_size
+ * [56..63] uint64 update_queue_size
+ * [64..143] uint64 embedding_queue_levels[10]
+ * [144..]   float32 * n_points * 2
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const EMBEDDING_QUEUE_LEVELS = 10;
-const BINARY_HEADER_BYTES = 36 + EMBEDDING_QUEUE_LEVELS * 4;
+const BINARY_HEADER_BYTES = 64 + EMBEDDING_QUEUE_LEVELS * 8;
+
+function readUint64LEAsNumber(view: DataView, offset: number): number {
+  const lo = view.getUint32(offset, true);
+  const hi = view.getUint32(offset + 4, true);
+  return hi * 2 ** 32 + lo;
+}
 
 export interface EmbeddingState {
   x: Float32Array<ArrayBuffer>;
@@ -37,6 +45,8 @@ export interface IterationStat {
   insertionOps: number;
   updateOps: number;
   embeddingOps: number;
+  insertionQueueSize: number;
+  updateQueueSize: number;
   embeddingQueueLevels: number[];
 }
 
@@ -108,44 +118,14 @@ export function useGpumap() {
   const wsRef = useRef<WebSocket | null>(null);
   // Mutable accumulator — avoids stale closure issues in onmessage
   const historyRef = useRef<IterationStat[]>([]);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
 
-  const disconnect = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.onclose = null;
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-  }, []);
+  const openWebSocket = useCallback(() => {
+    if (!mountedRef.current) return;
+    // Already open or connecting
+    if (wsRef.current && wsRef.current.readyState < WebSocket.CLOSING) return;
 
-  const start = useCallback(async (config: GpumapConfig) => {
-    disconnect();
-    historyRef.current = [];
-    setStatus({
-      phase: "connecting",
-      history: [],
-      targetLatency: config.target_latency,
-      classCategories: undefined,
-      classNames: undefined,
-    });
-
-    // 1. POST /api/start
-    try {
-      const resp = await fetch("/api/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(config),
-      });
-      if (!resp.ok) {
-        const text = await resp.text();
-        setStatus((prev) => ({ ...prev, phase: "error", message: `Start failed: ${text}` }));
-        return;
-      }
-    } catch (err) {
-      setStatus((prev) => ({ ...prev, phase: "error", message: `Network error: ${err}` }));
-      return;
-    }
-
-    // 2. Open WebSocket
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const port = 8000;
     const ws = new WebSocket(`${proto}://${window.location.hostname}:${port}/ws`);
@@ -154,18 +134,12 @@ export function useGpumap() {
 
     let last = performance.now();
 
-
-    ws.onopen = () => {
-      setStatus((prev) => ({ ...prev, phase: "running" }));
-    };
-
     ws.onmessage = (ev) => {
       if (ev.data instanceof ArrayBuffer) {
-                const t0 = performance.now();
+        const t0 = performance.now();
         const dtGap = t0 - last;
         last = t0;
 
-        // 최소 작업만
         const bytes = ev.data.byteLength;
 
         const t1 = performance.now();
@@ -176,18 +150,20 @@ export function useGpumap() {
         if (buf.byteLength < BINARY_HEADER_BYTES) return;
         const view = new DataView(buf);
 
-        const nInserted    = view.getUint32(0,  true);
-        const nPoints      = view.getUint32(4,  true);
-        const isDone       = view.getUint32(8,  true) !== 0;
-        const nUpdateOps   = view.getUint32(12, true);
-        const nEmbedOps    = view.getUint32(16, true);
-        const insTime      = view.getFloat32(20, true);
-        const updTime      = view.getFloat32(24, true);
-        const embTime      = view.getFloat32(28, true);
-        const wallTime     = view.getFloat32(32, true);
+        const nInserted    = readUint64LEAsNumber(view, 0);
+        const nPoints      = view.getUint32(8, true);
+        const isDone       = view.getUint32(12, true) !== 0;
+        const nUpdateOps   = readUint64LEAsNumber(view, 16);
+        const nEmbedOps    = readUint64LEAsNumber(view, 24);
+        const insTime      = view.getFloat32(32, true);
+        const updTime      = view.getFloat32(36, true);
+        const embTime      = view.getFloat32(40, true);
+        const wallTime     = view.getFloat32(44, true);
+        const insertionQueueSize = readUint64LEAsNumber(view, 48);
+        const updateQueueSize = readUint64LEAsNumber(view, 56);
         const embeddingQueueLevels = Array.from(
           { length: EMBEDDING_QUEUE_LEVELS },
-          (_, idx) => view.getUint32(36 + idx * 4, true),
+          (_, idx) => readUint64LEAsNumber(view, 64 + idx * 8),
         );
         const expectedBytes = BINARY_HEADER_BYTES + nPoints * 2 * 4;
         if (buf.byteLength < expectedBytes) return;
@@ -201,6 +177,8 @@ export function useGpumap() {
           insertionOps: nInserted,
           updateOps: nUpdateOps,
           embeddingOps: nEmbedOps,
+          insertionQueueSize,
+          updateQueueSize,
           embeddingQueueLevels,
         };
         historyRef.current = [...historyRef.current, stat];
@@ -209,7 +187,7 @@ export function useGpumap() {
           ...prev,
           phase: isDone ? "done" : "running",
           embedding: { x, y, nInserted, nPoints, isDone, key: `${nInserted}-${wallTime}` },
-          history: historyRef.current          
+          history: historyRef.current
         }));
 
         console.log("Received iteration stat:", stat);
@@ -217,12 +195,14 @@ export function useGpumap() {
         // Text frame → JSON control message
         try {
           const msg = JSON.parse(ev.data as string) as Record<string, unknown>;
-          if (msg["type"] === "started") {
+          if (msg["type"] === "waiting" || msg["type"] === "ping") {
+            // Server is idle or keepalive — ignore
+          } else if (msg["type"] === "started") {
             const encodedClass = Array.isArray(msg["class_labels"])
               ? encodeClassLabels(msg["class_labels"] as unknown[])
               : null;
             setStatus((prev) => ({
-              ...prev,              
+              ...prev,
               phase: "running",
               nInstances: msg["n_instances"] as number,
               nFeatures: msg["n_features"] as number,
@@ -231,12 +211,10 @@ export function useGpumap() {
             }));
           } else if (msg["type"] === "done") {
             setStatus((prev) => ({ ...prev, phase: "done" }));
-            disconnect();
+            // WS stays open — backend returns to waiting state automatically
           } else if (msg["type"] === "error") {
             setStatus((prev) => ({ ...prev, phase: "error", message: msg["message"] as string }));
-            disconnect();
           }
-          // ping → ignore
         } catch {
           /* ignore parse errors */
         }
@@ -244,26 +222,68 @@ export function useGpumap() {
     };
 
     ws.onerror = () => {
-      setStatus((prev) => ({ ...prev, phase: "error", message: "WebSocket error" }));
+      setStatus((prev) =>
+        prev.phase === "running" ? { ...prev, phase: "error", message: "WebSocket error" } : prev
+      );
     };
 
     ws.onclose = () => {
-      setStatus((prev) =>
-        prev.phase === "running" ? { ...prev, phase: "done" } : prev
-      );
+      // Auto-reconnect after 2s unless unmounted
+      if (mountedRef.current) {
+        reconnectTimerRef.current = setTimeout(() => openWebSocket(), 2000);
+      }
     };
-  }, [disconnect]);
+  }, []);
+
+  // Open WebSocket on mount; auto-reconnect on close
+  useEffect(() => {
+    mountedRef.current = true;
+    openWebSocket();
+    return () => {
+      mountedRef.current = false;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (wsRef.current) {
+        wsRef.current.onclose = null; // prevent reconnect on intentional close
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, [openWebSocket]);
+
+  const start = useCallback(async (config: GpumapConfig) => {
+    historyRef.current = [];
+    setStatus({
+      phase: "connecting",
+      history: [],
+      targetLatency: config.target_latency,
+      classCategories: undefined,
+      classNames: undefined,
+    });
+
+    try {
+      const resp = await fetch("/api/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        setStatus((prev) => ({ ...prev, phase: "error", message: `Start failed: ${text}` }));
+      }
+    } catch (err) {
+      setStatus((prev) => ({ ...prev, phase: "error", message: `Network error: ${err}` }));
+    }
+  }, []);
 
   const stop = useCallback(async () => {
-    disconnect();
-    setStatus(INITIAL_STATUS);
     historyRef.current = [];
+    setStatus(INITIAL_STATUS);
     try {
       await fetch("/api/stop", { method: "POST" });
     } catch {
       /* ignore */
     }
-  }, [disconnect]);
+  }, []);
 
   const uploadNpy = useCallback(async (file: File): Promise<{ shape: number[]; dtype: string } | null> => {
     const form = new FormData();
@@ -277,8 +297,7 @@ export function useGpumap() {
     }
   }, []);
 
-  // Cleanup on unmount
-  useEffect(() => () => { disconnect(); }, [disconnect]);
+  // Cleanup on unmount handled in the useEffect above
 
   return { status, start, stop, uploadNpy };
 }

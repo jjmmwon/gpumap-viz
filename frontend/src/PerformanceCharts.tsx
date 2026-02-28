@@ -4,13 +4,11 @@ import type { IterationStat } from "./useGpumap";
 interface PerformanceChartsProps {
   history: IterationStat[];
   targetLatency: number;
-  phase: "idle" | "connecting" | "running" | "done" | "error";
-  nPoints: number;
   totalPoints: number;
 }
 
 const CHART_WIDTH = 420;
-const CHART_HEIGHT = 88;
+const CHART_HEIGHT =68;
 const QUEUE_CHART_HEIGHT = CHART_HEIGHT;
 const MARGIN = { top: 6, right: 8, bottom: 15, left: 34 };
 const PLOT_WIDTH = CHART_WIDTH - MARGIN.left - MARGIN.right;
@@ -63,7 +61,7 @@ function formatOps(value: number): string {
 }
 
 function ChartEmpty() {
-  return <div className="performance-empty">Iteration stat가 아직 없습니다.</div>;
+  return <div className="performance-empty">No data available</div>;
 }
 
 function ChartFrame({
@@ -378,15 +376,109 @@ function QueueDetailChart({ history }: { history: IterationStat[] }) {
   );
 }
 
+/** JobQueuesChart — insertion/update/embedding 큐 사이즈를 시계열로 표시. 각 큐는 자신의 최댓값으로 정규화(0–1). */
+function JobQueuesChart({
+  history,
+  totalPoints,
+}: {
+  history: IterationStat[];
+  totalPoints: number;
+}) {
+  if (history.length < 2) return <ChartEmpty />;
+
+  let cumInserted = 0;
+  const insertionRemaining: number[] = [];
+  const embeddingTotal: number[] = [];
+  const updateActivity: number[] = [];
+
+  for (const s of history) {
+    cumInserted += s.insertionOps;
+    insertionRemaining.push(totalPoints > 0 ? Math.max(0, totalPoints - cumInserted) : 0);
+    embeddingTotal.push(s.embeddingQueueLevels.reduce((a, b) => a + b, 0));
+    updateActivity.push(s.updateOps);
+  }
+
+  const maxIns = Math.max(1, maxValue(insertionRemaining));
+  const maxEmb = Math.max(1, maxValue(embeddingTotal));
+  const maxUpd = Math.max(1, maxValue(updateActivity));
+
+  // 각 시리즈를 자신의 최댓값으로 정규화 → 0–1
+  const normIns = insertionRemaining.map(v => v / maxIns);
+  const normEmb = embeddingTotal.map(v => v / maxEmb);
+  const normUpd = updateActivity.map(v => v / maxUpd);
+
+  const n = history.length;
+  const denom = Math.max(1, n - 1);
+  const xAt = (i: number) => MARGIN.left + (i / denom) * PLOT_WIDTH;
+  const yAt = (v: number) => MARGIN.top + PLOT_HEIGHT - v * PLOT_HEIGHT;
+
+  const tickValues = xTicks(n);
+
+  return (
+    <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} role="img" aria-label="Job Queue Sizes Over Time">
+      {/* Y-axis: 0 / ½ / peak (normalized) */}
+      {([0, 0.5, 1] as number[]).map((norm) => {
+        const y = yAt(norm);
+        const label = norm === 0 ? "0" : norm === 0.5 ? "½" : "pk";
+        return (
+          <g key={norm}>
+            {norm > 0 && (
+              <line className="performance-grid" x1={MARGIN.left} y1={y} x2={MARGIN.left + PLOT_WIDTH} y2={y} />
+            )}
+            <text className="performance-axis-label" x={MARGIN.left - 6} y={y + 4} textAnchor="end">
+              {label}
+            </text>
+          </g>
+        );
+      })}
+      {/* X-axis */}
+      <line
+        className="performance-axis"
+        x1={MARGIN.left} y1={MARGIN.top + PLOT_HEIGHT}
+        x2={MARGIN.left + PLOT_WIDTH} y2={MARGIN.top + PLOT_HEIGHT}
+      />
+      {tickValues.map((tickValue, index) => {
+        const x = xAt(tickValue - 1);
+        const isFirst = index === 0;
+        const isLast = index === tickValues.length - 1;
+        const textAnchor = isFirst ? "start" : isLast ? "end" : "middle";
+        return (
+          <g key={tickValue}>
+            <line
+              className="performance-axis-tick"
+              x1={x} y1={MARGIN.top + PLOT_HEIGHT}
+              x2={x} y2={MARGIN.top + PLOT_HEIGHT + 4}
+            />
+            <text className="performance-axis-label" x={x} y={CHART_HEIGHT - 7} textAnchor={textAnchor}>
+              {tickValue}
+            </text>
+          </g>
+        );
+      })}
+      {/* Series */}
+      {totalPoints > 0 && <path className="performance-line-insertion" d={linePath(normIns, xAt, yAt)} />}
+      <path className="performance-line-embedding" d={linePath(normEmb, xAt, yAt)} />
+      <path className="performance-line-update" d={linePath(normUpd, xAt, yAt)} />
+    </svg>
+  );
+}
+
 export function PerformanceCharts({
   history,
   targetLatency,
-  phase,
-  nPoints,
   totalPoints,
 }: PerformanceChartsProps) {
-  const progressPct =
-    totalPoints > 0 ? Math.min(100, Math.round((nPoints / totalPoints) * 100)) : 0;
+  // Compute series peaks for Job Queues legend labels
+  let cumInserted = 0;
+  let peakEmbTotal = 0;
+  let peakUpdOps = 0;
+  for (const s of history) {
+    cumInserted += s.insertionOps;
+    peakEmbTotal = Math.max(peakEmbTotal, s.embeddingQueueLevels.reduce((a, b) => a + b, 0));
+    peakUpdOps = Math.max(peakUpdOps, s.updateOps);
+  }
+  // Insertion remaining starts at totalPoints and only decreases
+  const peakInsRemaining = totalPoints > 0 ? totalPoints : cumInserted;
 
   return (
     <section className="progress-card performance-stack">
@@ -394,12 +486,16 @@ export function PerformanceCharts({
         <h2 className="panel-title performance-title">Progressive Status View</h2>
       </div>
 
-      <section className="performance-section">
-        <h3>Job Queues</h3>
-        <p>Insertion: {nPoints.toLocaleString()} / {totalPoints ? totalPoints.toLocaleString() : "-"}</p>
-        <p>Phase: {phase}</p>
-        <p>Progress: {totalPoints ? `${progressPct}%` : "-"}</p>
-      </section>
+      <ChartFrame
+        title="Job Queues"
+        legend={[
+          { label: `insertion remaining (pk: ${formatOps(peakInsRemaining)})`, className: "insertion" },
+          { label: `embedding queue (pk: ${formatOps(peakEmbTotal)})`, className: "embedding" },
+          { label: `update ops/iter (pk: ${formatOps(peakUpdOps)})`, className: "update" },
+        ]}
+      >
+        <JobQueuesChart history={history} totalPoints={totalPoints} />
+      </ChartFrame>
       <hr className="performance-divider" />
 
       <ChartFrame
@@ -442,7 +538,10 @@ export function PerformanceCharts({
       <ChartFrame
         title="Embedding Queue Detail"
         legend={[
-          { label: "remaining jobs per level", className: "queue" },
+          { label: "size", className: "queue" },
+          // { label: "growing", className: "queue-growing" },
+          // { label: "draining", className: "queue-draining" },
+          // { label: "prev level", className: "queue-ghost" },
         ]}
       >
         <QueueDetailChart history={history} />
