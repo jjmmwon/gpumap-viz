@@ -30,7 +30,9 @@ import os
 import struct
 import tempfile
 from contextlib import asynccontextmanager
+import time
 from typing import Optional
+import queue
 
 import numpy as np
 from fastapi import FastAPI, UploadFile, WebSocket, WebSocketDisconnect
@@ -165,7 +167,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
 
             msg_type = msg.get("type")
-
+            
             if msg_type == "embedding":
                 emb: np.ndarray = msg["embedding"]
                 n_inserted: int = msg["n_inserted"]
@@ -185,6 +187,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 #   [32..35] float32 wall_time       (s)
                 #   [36..75] uint32 embedding_queue_levels[10]
                 #   [76..]   float32 * n_points * 2
+                
                 queue_levels = msg.get("embedding_queue_levels", [])
                 if not isinstance(queue_levels, list):
                     queue_levels = []

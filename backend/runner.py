@@ -276,7 +276,7 @@ class GPUMAPRunner:
         self._thread = None
         self._thread_stop = None
 
-    def _put(self, msg: dict) -> None:
+    def _put(self, msg: dict) -> None:        
         if self._loop and self._queue:
             self._loop.call_soon_threadsafe(self._queue.put_nowait, msg)
 
@@ -346,7 +346,9 @@ class GPUMAPRunner:
 
             assert model is not None
             all_inserted = False
+            iter = 0
             while not stop_event.is_set():
+                iter += 1
 
                 t0 = time.perf_counter()
                 res = model.run(target_latency=target_latency)
@@ -355,6 +357,8 @@ class GPUMAPRunner:
                 emb: np.ndarray = model.get_embedding().get()
 
                 wall_time = time.perf_counter() - t0
+
+                print(f"[gpumap-debug] run loop iteration {iter} : wall_time={wall_time:.2f}s")
 
                 self._put(
                     {
@@ -372,7 +376,7 @@ class GPUMAPRunner:
                             getattr(res, "embedding_queue_level_sizes", [])
                         ),
                     }
-                )
+                )                
 
                 if res.insertion_completed and not all_inserted:
                     all_inserted = True
