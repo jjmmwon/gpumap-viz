@@ -5,8 +5,8 @@ asyncio.Queue를 통해 임베딩 결과를 전달합니다.
 
 from __future__ import annotations
 
-import sys
 import asyncio
+import os
 import resource
 import threading
 import traceback
@@ -18,11 +18,20 @@ import numpy as np
 from gpumap import GPUMAP
 from gpumap._core import GPUMAPParams
 from gpumap.data_loader import DataLoader, PreloadMNISTDataLoader
-from gpumap.policy import DefaultWeightedPolicy
+from gpumap.estimator import DefaultLinearEstimator, MeanRateEstimator, PersistentEstimator
+from gpumap.strategy import (
+    BaseOpsStrategy,
+    DefaultWeightedStrategy,
+    SequentialPriorityStrategy,
+)
 
 
 _MAX_NEIGHBORS = 32
 _NUM_SAMPLES = 32
+
+_ESTIMATOR_DB_PATH = os.path.join(
+    os.path.expanduser("~"), ".gpumap", "estimator_cache.db"
+)
 
 
 def _is_bad_alloc_error(exc: Exception) -> bool:
@@ -160,6 +169,43 @@ def _check_limits(config: dict, n_instances: int) -> None:
         )
 
 
+def _make_strategy(config: dict) -> BaseOpsStrategy:
+    """Build an ops strategy from config.
+
+    config keys:
+      strategy          "weighted" (default) | "sequential"
+      estimator_db_path  SQLite path for persistent estimators;
+                         None disables persistence.
+    """
+    kind = config.get("strategy", "weighted")
+    db_path = config.get("estimator_db_path", _ESTIMATOR_DB_PATH)
+
+    from typing import Type
+    from gpumap.estimator import Estimator as _Est
+
+    def _persistent(name: str, base_cls: Type[_Est] = MeanRateEstimator) -> PersistentEstimator:
+        return PersistentEstimator(base_cls(), db_path, f"{kind}_{name}")
+
+    def _est(name: str, base_cls: Type[_Est] = MeanRateEstimator) -> _Est:
+        if db_path is None:
+            return base_cls()
+        return _persistent(name, base_cls)
+
+    if kind == "sequential":
+        return SequentialPriorityStrategy(
+            insertion_estimator=_est("insertion"),
+            update_estimator=_est("update", DefaultLinearEstimator),
+            embedding_estimator=_est("embedding", DefaultLinearEstimator),
+        )
+
+    # default: weighted
+    return DefaultWeightedStrategy(
+        insertion_estimator=_est("insertion"),
+        update_estimator=_est("update"),
+        embedding_estimator=_est("embedding"),
+    )
+
+
 def _make_data_loader(config: dict) -> DataLoader:
     source = config.get("data_source", "mnist")
     if source == "mnist":
@@ -281,6 +327,7 @@ class GPUMAPRunner:
 
     def _run(self, config: dict, stop_event: threading.Event) -> None:
         model = None
+        strategy = None
         try:
             _try_raise_memlock_limit()
             _check_cuda_runtime()
@@ -296,6 +343,8 @@ class GPUMAPRunner:
             params.n_instances = data_loader.n_instances
             params.n_features = data_loader.n_features
 
+            strategy = _make_strategy(config)
+
             # WSL2에서 CUDA 런타임 첫 초기화 시 _core.GPUMAP() 또는
             # _impl.initialize() 에서 std::bad_alloc이 발생할 수 있음.
             # gpumap.py는 _core.GPUMAP() 만 retry하므로 여기서 전체를 retry.
@@ -305,7 +354,7 @@ class GPUMAPRunner:
                     model = GPUMAP(
                         data_loader=data_loader,
                         params=params,
-                        policy=DefaultWeightedPolicy(),
+                        strategy=strategy,
                     )
                     with self._model_lock:
                         self._model = model
@@ -358,6 +407,10 @@ class GPUMAPRunner:
                     f"[gpumap-debug] run loop iteration {iter} : wall_time={wall_time:.2f}s"
                 )
 
+                print(
+                    f"[gpumap-debug] res: insertion_completed={res.insertion_completed}, n_inserted_instances={res.n_inserted_instances}"
+                )
+
                 if res.insertion_completed and not all_inserted:
                     all_inserted = True
 
@@ -408,4 +461,17 @@ class GPUMAPRunner:
                 with self._model_lock:
                     if self._model is model:
                         self._model = None
+            # Close persistent estimator DB connections if any.
+            if strategy is not None:
+                for est in (
+                    getattr(strategy, "insertion_estimator", None),
+                    getattr(strategy, "update_estimator", None),
+                    getattr(strategy, "embedding_estimator", None),
+                ):
+                    close = getattr(est, "close", None)
+                    if close is not None:
+                        try:
+                            close()
+                        except Exception:
+                            pass
             self._put({"type": "done"})
