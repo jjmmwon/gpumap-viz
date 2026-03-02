@@ -19,7 +19,7 @@ export default function App() {
       </header>
 
       <div className="app-body">
-        <aside className="app-sidebar">
+        <aside className="app-sidebar" style={{ overflow: "auto" }}>
           <section className="app-config-stage">
             <ConfigPanel
               onStart={start}

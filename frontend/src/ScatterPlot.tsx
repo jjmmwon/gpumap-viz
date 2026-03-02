@@ -157,9 +157,9 @@ export function ScatterPlot({ embedding, classCategories, classNames }: Props) {
             width={viewSize.width}
             height={viewSize.height}
             tooltip={tooltip}
-            key={embedding.key}
-
             onTooltip={setTooltip}
+            config={{ autoLabelEnabled: false }}
+            theme={{ statusBar: true }}
           />
         )
       )}

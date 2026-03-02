@@ -1,5 +1,12 @@
 import type { GpumapStatus } from "./useGpumap";
 
+function formatElapsed(sec: number): string {
+  if (sec < 60) return `${sec.toFixed(1)}s`;
+  const m = Math.floor(sec / 60);
+  const s = (sec % 60).toFixed(0).padStart(2, "0");
+  return `${m}m ${s}s`;
+}
+
 interface Props {
   status: GpumapStatus;
 }
@@ -29,10 +36,11 @@ function Dot({ phase }: { phase: string }) {
 }
 
 export function StatusBar({ status }: Props) {
-  const { phase, nInstances, nFeatures, embedding, message } = status;
+  const { phase, nInstances, nFeatures, embedding, message, history } = status;
   const pct = nInstances && embedding
     ? Math.min(100, Math.round((embedding.nPoints / nInstances) * 100))
     : 0;
+  const totalElapsed = history.reduce((sum, s) => sum + s.wallTime, 0);
 
   return (
     <>
@@ -78,6 +86,9 @@ export function StatusBar({ status }: Props) {
             )}
             {nFeatures && (
               <span>Dims: <b style={{ color: "var(--text)" }}>{nFeatures}</b></span>
+            )}
+            {totalElapsed > 0 && (
+              <span>Elapsed: <b style={{ color: "var(--text)" }}>{formatElapsed(totalElapsed)}</b></span>
             )}
             {embedding.isDone && (
               <span style={{ color: "var(--success)", fontWeight: 700 }}>Complete</span>

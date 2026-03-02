@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { GpumapConfig } from "./useGpumap";
+import type { GpumapConfig, ScheduleStrategy } from "./useGpumap";
 
 interface Props {
   onStart: (config: GpumapConfig) => void;
@@ -15,7 +15,15 @@ const DEFAULT: GpumapConfig = {
   max_epoch: 200,
   target_latency: 3.0,
   verbose: false,
+  strategy: "weighted",
 };
+
+const STRATEGY_OPTIONS: { value: ScheduleStrategy; label: string; description: string }[] = [
+  { value: "weighted",        label: "Weighted",        description: "Splits the time budget evenly across insertion, update, and embedding each iteration" },
+  { value: "sequential",      label: "Sequential",      description: "Inserts all data first, then refines — points appear on screen as fast as possible" },
+  { value: "phase_based",     label: "Phase-Based",     description: "Automatically shifts budget between phases as insertion progresses" },
+  { value: "fixed_insertion", label: "Fixed Insertion", description: "Reserves half the budget for insertion every iteration; rest goes to update and embedding" },
+];
 
 function SliderRow({
   label,
@@ -121,9 +129,10 @@ export function ConfigPanel({ onStart, onStop, onUploadNpy, running }: Props) {
 
       <div className="config-panel-body">
         {/* Data source */}
+        <h3 className="config-section-title">DR Configuration</h3>
         <section>
           <label style={{ color: "var(--muted)", fontSize: 14, display: "block", marginBottom: 8 }}>
-            DATA SOURCE
+            Data source
           </label>
           <select
             value={cfg.data_source}
@@ -139,7 +148,10 @@ export function ConfigPanel({ onStart, onStop, onUploadNpy, running }: Props) {
               fontSize: 15,
             }}
           >
-            <option value="mnist">MNIST</option>
+            <option value="mnist">MNIST (70k Samples)</option>
+            <option value="wine_reviews">Wine Reviews (196k Samples)</option>
+            <option value="covertype">Covertype (581k Samples)</option>
+            <option value="gist">GIST (1M Samples)</option>
             <option value="npy">NPY</option>
           </select>
 
@@ -161,7 +173,7 @@ export function ConfigPanel({ onStart, onStop, onUploadNpy, running }: Props) {
           )}
         </section>
 
-        <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "12px 0" }} />
+        {/* <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "12px 0" }} /> */}
 
         <NumberInputRow
           label="n_neighbors"
@@ -187,15 +199,45 @@ export function ConfigPanel({ onStart, onStop, onUploadNpy, running }: Props) {
           step={50}
           onChange={(v) => set("max_epoch", v)}
         />
+
+        <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "12px 0" }} />
+
+        {/* Schedule strategy */}
+        <h3 className="config-section-title">Schedule Configuration</h3>
+        <section style={{ marginBottom: 12 }}>
+          <label style={{ color: "var(--muted)", fontSize: 14, display: "block", marginBottom: 8 }}>
+            Schedule startegy
+          </label>
+          <select
+            value={cfg.strategy ?? "weighted"}
+            onChange={(e) => set("strategy", e.target.value as ScheduleStrategy)}
+            style={{
+              width: "100%",
+              background: "var(--surface-alt)",
+              color: "var(--text)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              padding: "7px 8px",
+              fontSize: 15,
+            }}
+          >
+            {STRATEGY_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)", lineHeight: 1.4 }}>
+            {STRATEGY_OPTIONS.find((o) => o.value === (cfg.strategy ?? "weighted"))?.description}
+          </p>
+        </section>
         <SliderRow
           label="target_latency (s)"
           value={cfg.target_latency}
-          min={0.1} max={20.0} step={0.1}
+          min={0.1} max={10.0} step={0.1}
           format={(v) => v.toFixed(2)}
           onChange={(v) => set("target_latency", v)}
         />
 
-        <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "12px 0" }} />
+        <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "8px 0" }} />
 
         {/* Verbose */}
         <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>

@@ -62,6 +62,8 @@ export interface GpumapStatus {
   targetLatency: number;
 }
 
+export type ScheduleStrategy = "weighted" | "sequential" | "phase_based" | "fixed_insertion";
+
 export interface GpumapConfig {
   data_source: "mnist" | "npy";
   n_neighbors: number;
@@ -69,6 +71,7 @@ export interface GpumapConfig {
   max_epoch: number;
   target_latency: number;
   verbose?: boolean;
+  strategy?: ScheduleStrategy;
 }
 
 /** Split flat [x0,y0,x1,y1,...] Float32Array into separate x/y arrays. */
