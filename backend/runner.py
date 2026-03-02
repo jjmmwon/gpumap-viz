@@ -17,12 +17,16 @@ import numpy as np
 
 from gpumap import GPUMAP
 from gpumap._core import GPUMAPParams
-from gpumap.data_loader import DataLoader, PreloadMNISTDataLoader
-from gpumap.estimator import DefaultLinearEstimator, MeanRateEstimator, PersistentEstimator
-from gpumap.strategy import (
-    BaseOpsStrategy,
-    DefaultWeightedStrategy,
+from gpumap.data_loader import DataLoader, PreloadDataLoader
+from gpumap.schedule import (
+    BaseStrategy,
+    WeightedStrategy,
+    FixedInsertionStrategy,
     SequentialPriorityStrategy,
+    PhaseBasedStrategy,
+    MeanRateEstimator,
+    DefaultLinearEstimator,
+    PersistentEstimator,
 )
 
 
@@ -169,21 +173,27 @@ def _check_limits(config: dict, n_instances: int) -> None:
         )
 
 
-def _make_strategy(config: dict) -> BaseOpsStrategy:
+def _make_strategy(
+    config: dict,
+    n_instances: int,
+    n_neighbors: int,
+) -> BaseStrategy:
     """Build an ops strategy from config.
 
     config keys:
-      strategy          "weighted" (default) | "sequential"
+      strategy           "weighted" (default) | "sequential"
       estimator_db_path  SQLite path for persistent estimators;
                          None disables persistence.
     """
+    from typing import Type
+    from gpumap.schedule import Estimator as _Est
+
     kind = config.get("strategy", "weighted")
     db_path = config.get("estimator_db_path", _ESTIMATOR_DB_PATH)
 
-    from typing import Type
-    from gpumap.estimator import Estimator as _Est
-
-    def _persistent(name: str, base_cls: Type[_Est] = MeanRateEstimator) -> PersistentEstimator:
+    def _persistent(
+        name: str, base_cls: Type[_Est] = MeanRateEstimator
+    ) -> PersistentEstimator:
         return PersistentEstimator(base_cls(), db_path, f"{kind}_{name}")
 
     def _est(name: str, base_cls: Type[_Est] = MeanRateEstimator) -> _Est:
@@ -193,28 +203,54 @@ def _make_strategy(config: dict) -> BaseOpsStrategy:
 
     if kind == "sequential":
         return SequentialPriorityStrategy(
+            n_instances=n_instances,
+            n_neighbors=n_neighbors,
             insertion_estimator=_est("insertion"),
             update_estimator=_est("update", DefaultLinearEstimator),
             embedding_estimator=_est("embedding", DefaultLinearEstimator),
         )
 
+    if kind == "phase_based":
+        return PhaseBasedStrategy(
+            n_instances=n_instances,
+            n_neighbors=n_neighbors,
+            insertion_estimator=_est("insertion"),
+            update_estimator=_est("update", DefaultLinearEstimator),
+            embedding_estimator=_est("embedding", DefaultLinearEstimator),
+        )
+
+    if kind == "fixed_insertion":
+        return FixedInsertionStrategy(
+            n_instances=n_instances,
+            n_neighbors=n_neighbors,
+            update_estimator=_est("update", DefaultLinearEstimator),
+            embedding_estimator=_est("embedding", DefaultLinearEstimator),
+        )
+
     # default: weighted
-    return DefaultWeightedStrategy(
+    return WeightedStrategy(
+        n_instances=n_instances,
+        n_neighbors=n_neighbors,
         insertion_estimator=_est("insertion"),
         update_estimator=_est("update"),
         embedding_estimator=_est("embedding"),
     )
 
 
+def _get_data_name(config: dict) -> str:
+    source = config.get("data_source", "mnist")
+    if source == "npy":
+        return os.path.basename(config.get("data_path", "unknown.npy"))
+    return source
+
+
 def _make_data_loader(config: dict) -> DataLoader:
     source = config.get("data_source", "mnist")
-    if source == "mnist":
-        return PreloadMNISTDataLoader()
-    elif source == "npy":
+    if source == "npy":
         path = config["data_path"]
         return NpyDataLoader(path)
     else:
-        raise ValueError(f"Unknown data_source: {source!r}")
+        return PreloadDataLoader(source)
 
 
 class NpyDataLoader(DataLoader):
@@ -328,6 +364,7 @@ class GPUMAPRunner:
     def _run(self, config: dict, stop_event: threading.Event) -> None:
         model = None
         strategy = None
+        data_loader = None
         try:
             _try_raise_memlock_limit()
             _check_cuda_runtime()
@@ -343,7 +380,11 @@ class GPUMAPRunner:
             params.n_instances = data_loader.n_instances
             params.n_features = data_loader.n_features
 
-            strategy = _make_strategy(config)
+            strategy = _make_strategy(
+                config,
+                n_instances=data_loader.n_instances,
+                n_neighbors=params.n_neighbors,
+            )
 
             # WSL2에서 CUDA 런타임 첫 초기화 시 _core.GPUMAP() 또는
             # _impl.initialize() 에서 std::bad_alloc이 발생할 수 있음.
@@ -461,13 +502,27 @@ class GPUMAPRunner:
                 with self._model_lock:
                     if self._model is model:
                         self._model = None
-            # Close persistent estimator DB connections if any.
+            # Log run metadata and close persistent estimator DB connections.
             if strategy is not None:
-                for est in (
+                estimators = (
                     getattr(strategy, "insertion_estimator", None),
                     getattr(strategy, "update_estimator", None),
                     getattr(strategy, "embedding_estimator", None),
-                ):
+                )
+                if data_loader is not None:
+                    data_name = _get_data_name(config)
+                    n_inserted = model.n_inserted_instances if model is not None else 0
+                    for est in estimators:
+                        if isinstance(est, PersistentEstimator):
+                            try:
+                                est.log_run(
+                                    data_name,
+                                    data_loader.n_features,
+                                    n_inserted,
+                                )
+                            except Exception:
+                                pass
+                for est in estimators:
                     close = getattr(est, "close", None)
                     if close is not None:
                         try:

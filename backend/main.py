@@ -100,7 +100,6 @@ async def api_start(config: dict):
     if config.get("data_source") == "npy" and _uploaded_npy_path:
         config["data_path"] = _uploaded_npy_path
 
-    config["strategy"] = "sequential"
     print(f"Starting GPUMAP with config: {config}")
 
     loop = asyncio.get_running_loop()
